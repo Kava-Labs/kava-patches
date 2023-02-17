@@ -1,0 +1,50 @@
+From b603b5901e9aab385d07387c70f5537bdd2d900c Mon Sep 17 00:00:00 2001
+From: Nick DeLuca <nickdeluca08@gmail.com>
+Date: Tue, 7 Jun 2022 12:57:21 -0700
+Subject: [PATCH 3/4] add transfer events to delegate and undelegate for
+ simpler rosetta logic (#146)
+
+in handling multiple messages in MsgExec
+---
+ x/bank/keeper/keeper.go | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/x/bank/keeper/keeper.go b/x/bank/keeper/keeper.go
+index 6c314029d..d1f2f8547 100644
+--- a/x/bank/keeper/keeper.go
++++ b/x/bank/keeper/keeper.go
+@@ -178,6 +178,15 @@ func (k BaseKeeper) DelegateCoins(ctx sdk.Context, delegatorAddr, moduleAccAddr
+ 		return err
+ 	}
+ 
++	ctx.EventManager().EmitEvent(
++		sdk.NewEvent(
++			types.EventTypeTransfer,
++			sdk.NewAttribute(types.AttributeKeyRecipient, moduleAccAddr.String()),
++			sdk.NewAttribute(types.AttributeKeySender, delegatorAddr.String()),
++			sdk.NewAttribute(sdk.AttributeKeyAmount, amt.String()),
++		),
++	)
++
+ 	return nil
+ }
+ 
+@@ -210,6 +219,15 @@ func (k BaseKeeper) UndelegateCoins(ctx sdk.Context, moduleAccAddr, delegatorAdd
+ 		return err
+ 	}
+ 
++	ctx.EventManager().EmitEvent(
++		sdk.NewEvent(
++			types.EventTypeTransfer,
++			sdk.NewAttribute(types.AttributeKeyRecipient, delegatorAddr.String()),
++			sdk.NewAttribute(types.AttributeKeySender, moduleAccAddr.String()),
++			sdk.NewAttribute(sdk.AttributeKeyAmount, amt.String()),
++		),
++	)
++
+ 	return nil
+ }
+ 
+-- 
+2.30.2
+

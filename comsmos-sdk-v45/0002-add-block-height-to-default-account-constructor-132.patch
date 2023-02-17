@@ -1,0 +1,71 @@
+From 5ab0c5ad4f88e15f2c0081fa1470aff2efd51ee1 Mon Sep 17 00:00:00 2001
+From: Ruaridh <rhuairahrighairidh@users.noreply.github.com>
+Date: Wed, 1 Jun 2022 23:39:32 +0100
+Subject: [PATCH 2/4] add block height to default account constructor (#132)
+
+---
+ x/auth/keeper/account.go | 2 +-
+ x/auth/keeper/keeper.go  | 6 ++++--
+ x/auth/types/account.go  | 2 +-
+ 3 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/x/auth/keeper/account.go b/x/auth/keeper/account.go
+index 7474e93a5..43f9f8ede 100644
+--- a/x/auth/keeper/account.go
++++ b/x/auth/keeper/account.go
+@@ -7,7 +7,7 @@ import (
+ 
+ // NewAccountWithAddress implements AccountKeeperI.
+ func (ak AccountKeeper) NewAccountWithAddress(ctx sdk.Context, addr sdk.AccAddress) types.AccountI {
+-	acc := ak.proto()
++	acc := ak.proto(ctx.BlockHeight())
+ 	err := acc.SetAddress(addr)
+ 	if err != nil {
+ 		panic(err)
+diff --git a/x/auth/keeper/keeper.go b/x/auth/keeper/keeper.go
+index 811d9febe..262b46880 100644
+--- a/x/auth/keeper/keeper.go
++++ b/x/auth/keeper/keeper.go
+@@ -47,6 +47,8 @@ type AccountKeeperI interface {
+ 	GetNextAccountNumber(sdk.Context) uint64
+ }
+ 
++type ProtoAccountConstructor func(currentBlockHeight int64) types.AccountI
++
+ // AccountKeeper encodes/decodes accounts using the go-amino (binary)
+ // encoding/decoding library.
+ type AccountKeeper struct {
+@@ -56,7 +58,7 @@ type AccountKeeper struct {
+ 	permAddrs     map[string]types.PermissionsForAddress
+ 
+ 	// The prototypical AccountI constructor.
+-	proto func() types.AccountI
++	proto ProtoAccountConstructor
+ }
+ 
+ var _ AccountKeeperI = &AccountKeeper{}
+@@ -68,7 +70,7 @@ var _ AccountKeeperI = &AccountKeeper{}
+ // and don't have to fit into any predefined structure. This auth module does not use account permissions internally, though other modules
+ // may use auth.Keeper to access the accounts permissions map.
+ func NewAccountKeeper(
+-	cdc codec.BinaryCodec, key sdk.StoreKey, paramstore paramtypes.Subspace, proto func() types.AccountI,
++	cdc codec.BinaryCodec, key sdk.StoreKey, paramstore paramtypes.Subspace, proto ProtoAccountConstructor,
+ 	maccPerms map[string][]string,
+ ) AccountKeeper {
+ 	// set KeyTable if it has not already been set
+diff --git a/x/auth/types/account.go b/x/auth/types/account.go
+index e93a80e79..20b55f925 100644
+--- a/x/auth/types/account.go
++++ b/x/auth/types/account.go
+@@ -44,7 +44,7 @@ func NewBaseAccount(address sdk.AccAddress, pubKey cryptotypes.PubKey, accountNu
+ }
+ 
+ // ProtoBaseAccount - a prototype function for BaseAccount
+-func ProtoBaseAccount() AccountI {
++func ProtoBaseAccount(_ int64) AccountI {
+ 	return &BaseAccount{}
+ }
+ 
+-- 
+2.30.2
+
