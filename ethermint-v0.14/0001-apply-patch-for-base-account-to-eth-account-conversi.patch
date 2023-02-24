@@ -1,0 +1,186 @@
+From 2d5f09832920bbd6daf3511aec68417905ebede9 Mon Sep 17 00:00:00 2001
+From: Nick DeLuca <nickdeluca08@gmail.com>
+Date: Fri, 22 Apr 2022 08:42:28 -0700
+Subject: [PATCH 01/12] apply patch for base account to eth account conversion
+ on contract (#5)
+
+Apply patch for base account to eth account conversion on contract
+---
+ x/evm/keeper/statedb.go      |  15 +++++-
+ x/evm/keeper/statedb_test.go | 101 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 115 insertions(+), 1 deletion(-)
+
+diff --git a/x/evm/keeper/statedb.go b/x/evm/keeper/statedb.go
+index 1dbd6f9b..c7df3a81 100644
+--- a/x/evm/keeper/statedb.go
++++ b/x/evm/keeper/statedb.go
+@@ -8,6 +8,7 @@ import (
+ 	"github.com/cosmos/cosmos-sdk/store/prefix"
+ 	sdk "github.com/cosmos/cosmos-sdk/types"
+ 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
++	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+ 	"github.com/ethereum/go-ethereum/common"
+ 	ethermint "github.com/tharsis/ethermint/types"
+ 	"github.com/tharsis/ethermint/x/evm/statedb"
+@@ -115,13 +116,25 @@ func (k *Keeper) SetAccount(ctx sdk.Context, addr common.Address, account stated
+ 	}
+ 
+ 	codeHash := common.BytesToHash(account.CodeHash)
++	ethAcct, ok := acct.(ethermint.EthAccountI)
+ 
+-	if ethAcct, ok := acct.(ethermint.EthAccountI); ok {
++	if ok {
+ 		if err := ethAcct.SetCodeHash(codeHash); err != nil {
+ 			return err
+ 		}
+ 	}
+ 
++	if !ok && account.IsContract() {
++		if baseAcct, isBaseAccount := acct.(*authtypes.BaseAccount); isBaseAccount {
++			acct = &ethermint.EthAccount{
++				BaseAccount: baseAcct,
++				CodeHash:    codeHash.Hex(),
++			}
++		} else {
++			return sdkerrors.Wrapf(types.ErrInvalidAccount, "type %T, address %s", acct, addr)
++		}
++	}
++
+ 	k.accountKeeper.SetAccount(ctx, acct)
+ 
+ 	if err := k.SetBalance(ctx, addr, account.Balance); err != nil {
+diff --git a/x/evm/keeper/statedb_test.go b/x/evm/keeper/statedb_test.go
+index 65a985bd..8eadab1f 100644
+--- a/x/evm/keeper/statedb_test.go
++++ b/x/evm/keeper/statedb_test.go
+@@ -3,6 +3,7 @@ package keeper_test
+ import (
+ 	"fmt"
+ 	"math/big"
++	"time"
+ 
+ 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
+ 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
+@@ -10,12 +11,14 @@ import (
+ 	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
+ 	authtx "github.com/cosmos/cosmos-sdk/x/auth/tx"
+ 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
++	vestingtypes "github.com/cosmos/cosmos-sdk/x/auth/vesting/types"
+ 
+ 	"github.com/ethereum/go-ethereum/common"
+ 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+ 	"github.com/ethereum/go-ethereum/core/vm"
+ 	"github.com/ethereum/go-ethereum/crypto"
+ 	"github.com/tharsis/ethermint/tests"
++	etherminttypes "github.com/tharsis/ethermint/types"
+ 	"github.com/tharsis/ethermint/x/evm/statedb"
+ 	"github.com/tharsis/ethermint/x/evm/types"
+ )
+@@ -217,6 +220,104 @@ func (suite *KeeperTestSuite) TestSetNonce() {
+ 	}
+ }
+ 
++func (suite *KeeperTestSuite) TestSetAccount() {
++	baseAddr := tests.GenerateAddress()
++	baseAcc := &authtypes.BaseAccount{Address: sdk.AccAddress(baseAddr.Bytes()).String()}
++	ethAddr := tests.GenerateAddress()
++	ethAcc := &etherminttypes.EthAccount{BaseAccount: &authtypes.BaseAccount{Address: sdk.AccAddress(ethAddr.Bytes()).String()}, CodeHash: common.BytesToHash(types.EmptyCodeHash).String()}
++	vestingAddr := tests.GenerateAddress()
++	vestingAcc := vestingtypes.NewBaseVestingAccount(&authtypes.BaseAccount{Address: sdk.AccAddress(vestingAddr.Bytes()).String()}, sdk.NewCoins(), time.Now().Unix())
++
++	testCases := []struct {
++		name        string
++		address     common.Address
++		account     statedb.Account
++		expectedErr error
++	}{
++		{
++			"new account, non-contract account",
++			tests.GenerateAddress(),
++			statedb.Account{10, big.NewInt(100), types.EmptyCodeHash},
++			nil,
++		},
++		{
++			"new account, contract account",
++			tests.GenerateAddress(),
++			statedb.Account{10, big.NewInt(100), crypto.Keccak256Hash([]byte("some code hash")).Bytes()},
++			nil,
++		},
++		{
++			"existing eth account, non-contract account",
++			ethAddr,
++			statedb.Account{10, big.NewInt(1), types.EmptyCodeHash},
++			nil,
++		},
++		{
++			"existing eth account, contract account",
++			ethAddr,
++			statedb.Account{10, big.NewInt(0), crypto.Keccak256Hash([]byte("some code hash")).Bytes()},
++			nil,
++		},
++		{
++			"existing base account, non-contract account",
++			baseAddr,
++			statedb.Account{10, big.NewInt(10), types.EmptyCodeHash},
++			nil,
++		},
++		{
++			"existing base account, contract account",
++			baseAddr,
++			statedb.Account{10, big.NewInt(99), crypto.Keccak256Hash([]byte("some code hash")).Bytes()},
++			nil,
++		},
++		{
++			"existing vesting account, non-contract account",
++			vestingAddr,
++			statedb.Account{10, big.NewInt(1000), types.EmptyCodeHash},
++			nil,
++		},
++		{
++			"existing vesting account, contract account",
++			vestingAddr,
++			statedb.Account{10, big.NewInt(1001), crypto.Keccak256Hash([]byte("some code hash")).Bytes()},
++			types.ErrInvalidAccount,
++		},
++	}
++
++	for _, tc := range testCases {
++		suite.Run(tc.name, func() {
++			if tc.address == baseAddr {
++				suite.app.AccountKeeper.SetAccount(suite.ctx, baseAcc)
++			}
++			if tc.address == ethAddr {
++				suite.app.AccountKeeper.SetAccount(suite.ctx, ethAcc)
++			}
++			if tc.address == vestingAddr {
++				suite.app.AccountKeeper.SetAccount(suite.ctx, vestingAcc)
++			}
++
++			vmdb := suite.StateDB()
++			err := vmdb.Keeper().SetAccount(suite.ctx, tc.address, tc.account)
++
++			if tc.expectedErr == nil {
++				suite.Require().NoError(err)
++			} else {
++				suite.Require().Error(tc.expectedErr)
++				return
++			}
++
++			nonce := vmdb.GetNonce(tc.address)
++			suite.Equal(nonce, tc.account.Nonce, "expected nonce to be set")
++
++			hash := vmdb.GetCodeHash(tc.address)
++			suite.Equal(common.BytesToHash(tc.account.CodeHash), hash, "expected code hash to be set")
++
++			balance := vmdb.GetBalance(tc.address)
++			suite.Equal(balance, tc.account.Balance, "expected balance to be set")
++		})
++	}
++}
++
+ func (suite *KeeperTestSuite) TestGetCodeHash() {
+ 	addr := tests.GenerateAddress()
+ 	baseAcc := &authtypes.BaseAccount{Address: sdk.AccAddress(addr.Bytes()).String()}
+-- 
+2.38.1
+

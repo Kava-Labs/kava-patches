@@ -1,0 +1,61 @@
+From ee67e8f8dfe9c95b5c018766e1f9c98409f0a708 Mon Sep 17 00:00:00 2001
+From: Draco <draco@dracoli.com>
+Date: Fri, 7 Oct 2022 11:00:30 -0400
+Subject: [PATCH 08/12] fix denoms_to_claim type
+
+---
+ x/evm/migrations/v2/store.go | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/x/evm/migrations/v2/store.go b/x/evm/migrations/v2/store.go
+index 62bbd322..701835d4 100644
+--- a/x/evm/migrations/v2/store.go
++++ b/x/evm/migrations/v2/store.go
+@@ -90,7 +90,7 @@ var (
+ 			MsgValueTypeName: "MsgValueIncentiveClaimHardReward",
+ 			ValueTypes: []types.EIP712MsgAttrType{
+ 				{Name: "sender", Type: "string"},
+-				{Name: "denoms_to_claim", Type: "IncentiveSelection"},
++				{Name: "denoms_to_claim", Type: "IncentiveSelection[]"},
+ 			},
+ 			NestedTypes: []types.EIP712NestedMsgType{
+ 				{
+@@ -107,7 +107,7 @@ var (
+ 			MsgValueTypeName: "MsgValueIncentiveClaimDelegatorReward",
+ 			ValueTypes: []types.EIP712MsgAttrType{
+ 				{Name: "sender", Type: "string"},
+-				{Name: "denoms_to_claim", Type: "IncentiveSelection"},
++				{Name: "denoms_to_claim", Type: "IncentiveSelection[]"},
+ 			},
+ 			NestedTypes: []types.EIP712NestedMsgType{
+ 				{
+@@ -124,7 +124,7 @@ var (
+ 			MsgValueTypeName: "MsgValueIncentiveClaimSwapReward",
+ 			ValueTypes: []types.EIP712MsgAttrType{
+ 				{Name: "sender", Type: "string"},
+-				{Name: "denoms_to_claim", Type: "IncentiveSelection"},
++				{Name: "denoms_to_claim", Type: "IncentiveSelection[]"},
+ 			},
+ 			NestedTypes: []types.EIP712NestedMsgType{
+ 				{
+@@ -141,7 +141,7 @@ var (
+ 			MsgValueTypeName: "MsgValueIncentiveClaimSavingsReward",
+ 			ValueTypes: []types.EIP712MsgAttrType{
+ 				{Name: "sender", Type: "string"},
+-				{Name: "denoms_to_claim", Type: "IncentiveSelection"},
++				{Name: "denoms_to_claim", Type: "IncentiveSelection[]"},
+ 			},
+ 			NestedTypes: []types.EIP712NestedMsgType{
+ 				{
+@@ -158,7 +158,7 @@ var (
+ 			MsgValueTypeName: "MsgValueIncentiveClaimEarnReward",
+ 			ValueTypes: []types.EIP712MsgAttrType{
+ 				{Name: "sender", Type: "string"},
+-				{Name: "denoms_to_claim", Type: "IncentiveSelection"},
++				{Name: "denoms_to_claim", Type: "IncentiveSelection[]"},
+ 			},
+ 			NestedTypes: []types.EIP712NestedMsgType{
+ 				{
+-- 
+2.38.1
+
