@@ -1,0 +1,422 @@
+From 0dce675ed772420aec1332132d836f94f0711677 Mon Sep 17 00:00:00 2001
+From: drklee3 <derrick@dlee.dev>
+Date: Thu, 15 Jun 2023 14:01:15 -0700
+Subject: [PATCH] Prevent storing genDoc to db
+
+Changes from tendermint d6b4bc267bf333124438ed6b32a61660aa3e8fa1
+---
+ blockchain/v0/reactor_test.go |  2 +-
+ blockchain/v1/reactor_test.go |  2 +-
+ blockchain/v2/reactor_test.go |  8 +---
+ consensus/byzantine_test.go   |  4 +-
+ consensus/common_test.go      | 11 +----
+ consensus/reactor_test.go     |  5 ++-
+ consensus/replay_test.go      |  5 ++-
+ node/node.go                  | 85 +++++++++++++----------------------
+ state/state_test.go           |  5 ++-
+ state/store.go                |  6 ---
+ state/store_test.go           |  2 +-
+ state/tx_filter_test.go       | 10 +----
+ store/store_test.go           | 16 ++-----
+ test/maverick/node/node.go    |  5 +--
+ 14 files changed, 56 insertions(+), 110 deletions(-)
+
+diff --git a/blockchain/v0/reactor_test.go b/blockchain/v0/reactor_test.go
+index 0bb02b440..cc674ea45 100644
+--- a/blockchain/v0/reactor_test.go
++++ b/blockchain/v0/reactor_test.go
+@@ -77,7 +77,7 @@ func newBlockchainReactor(
+ 	})
+ 	blockStore := store.NewBlockStore(blockDB)
+ 
+-	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++	state, err := sm.MakeGenesisState(genDoc)
+ 	if err != nil {
+ 		panic(fmt.Errorf("error constructing state from genesis file: %w", err))
+ 	}
+diff --git a/blockchain/v1/reactor_test.go b/blockchain/v1/reactor_test.go
+index 1e04225cd..562a7f049 100644
+--- a/blockchain/v1/reactor_test.go
++++ b/blockchain/v1/reactor_test.go
+@@ -109,7 +109,7 @@ func newBlockchainReactor(
+ 	})
+ 	blockStore := store.NewBlockStore(blockDB)
+ 
+-	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++	state, err := sm.MakeGenesisState(genDoc)
+ 	if err != nil {
+ 		panic(fmt.Errorf("error constructing state from genesis file: %w", err))
+ 	}
+diff --git a/blockchain/v2/reactor_test.go b/blockchain/v2/reactor_test.go
+index 5c6ad8a91..085a0fcda 100644
+--- a/blockchain/v2/reactor_test.go
++++ b/blockchain/v2/reactor_test.go
+@@ -518,18 +518,14 @@ func newReactorStore(
+ 		panic(fmt.Errorf("error start app: %w", err))
+ 	}
+ 
+-	stateDB := dbm.NewMemDB()
+ 	blockStore := store.NewBlockStore(dbm.NewMemDB())
+-	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+-		DiscardABCIResponses: false,
+-	})
+-	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++	state, err := sm.MakeGenesisState(genDoc)
+ 	if err != nil {
+ 		panic(fmt.Errorf("error constructing state from genesis file: %w", err))
+ 	}
+ 
+ 	db := dbm.NewMemDB()
+-	stateStore = sm.NewStore(db, sm.StoreOptions{
++	stateStore := sm.NewStore(db, sm.StoreOptions{
+ 		DiscardABCIResponses: false,
+ 	},
+ 	)
+diff --git a/consensus/byzantine_test.go b/consensus/byzantine_test.go
+index 53d262444..f9b7e5ea5 100644
+--- a/consensus/byzantine_test.go
++++ b/consensus/byzantine_test.go
+@@ -54,7 +54,9 @@ func TestByzantinePrevoteEquivocation(t *testing.T) {
+ 		stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+ 			DiscardABCIResponses: false,
+ 		})
+-		state, _ := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++		state, err := sm.MakeGenesisState(genDoc)
++		require.NoError(t, err)
++		require.NoError(t, stateStore.Save(state))
+ 		thisConfig := ResetConfig(fmt.Sprintf("%s_%d", testName, i))
+ 		defer os.RemoveAll(thisConfig.RootDir)
+ 		ensureDir(path.Dir(thisConfig.Consensus.WalFile()), 0700) // dir for wal
+diff --git a/consensus/common_test.go b/consensus/common_test.go
+index ddf487cdd..2b11851d5 100644
+--- a/consensus/common_test.go
++++ b/consensus/common_test.go
+@@ -722,10 +722,7 @@ func randConsensusNet(nValidators int, testName string, tickerFunc func() Timeou
+ 	configRootDirs := make([]string, 0, nValidators)
+ 	for i := 0; i < nValidators; i++ {
+ 		stateDB := dbm.NewMemDB() // each state needs its own db
+-		stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+-			DiscardABCIResponses: false,
+-		})
+-		state, _ := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++		state, _ := sm.MakeGenesisState(genDoc)
+ 		thisConfig := ResetConfig(fmt.Sprintf("%s_%d", testName, i))
+ 		configRootDirs = append(configRootDirs, thisConfig.RootDir)
+ 		for _, opt := range configOpts {
+@@ -761,11 +758,7 @@ func randConsensusNetWithPeers(
+ 	var peer0Config *cfg.Config
+ 	configRootDirs := make([]string, 0, nPeers)
+ 	for i := 0; i < nPeers; i++ {
+-		stateDB := dbm.NewMemDB() // each state needs its own db
+-		stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+-			DiscardABCIResponses: false,
+-		})
+-		state, _ := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++		state, _ := sm.MakeGenesisState(genDoc)
+ 		thisConfig := ResetConfig(fmt.Sprintf("%s_%d", testName, i))
+ 		configRootDirs = append(configRootDirs, thisConfig.RootDir)
+ 		ensureDir(filepath.Dir(thisConfig.Consensus.WalFile()), 0o700) // dir for wal
+diff --git a/consensus/reactor_test.go b/consensus/reactor_test.go
+index dbdafde35..230dcc785 100644
+--- a/consensus/reactor_test.go
++++ b/consensus/reactor_test.go
+@@ -143,7 +143,8 @@ func TestReactorWithEvidence(t *testing.T) {
+ 		stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+ 			DiscardABCIResponses: false,
+ 		})
+-		state, _ := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++		state, err := sm.MakeGenesisState(genDoc)
++		require.NoError(t, err)
+ 		thisConfig := ResetConfig(fmt.Sprintf("%s_%d", testName, i))
+ 		defer os.RemoveAll(thisConfig.RootDir)
+ 		ensureDir(path.Dir(thisConfig.Consensus.WalFile()), 0700) // dir for wal
+@@ -209,7 +210,7 @@ func TestReactorWithEvidence(t *testing.T) {
+ 
+ 		eventBus := types.NewEventBus()
+ 		eventBus.SetLogger(log.TestingLogger().With("module", "events"))
+-		err := eventBus.Start()
++		err = eventBus.Start()
+ 		require.NoError(t, err)
+ 		cs.SetEventBus(eventBus)
+ 
+diff --git a/consensus/replay_test.go b/consensus/replay_test.go
+index 30fdc38f7..f75555b84 100644
+--- a/consensus/replay_test.go
++++ b/consensus/replay_test.go
+@@ -67,7 +67,8 @@ func startNewStateAndWaitForBlock(t *testing.T, consensusReplayConfig *cfg.Confi
+ 	lastBlockHeight int64, blockDB dbm.DB, stateStore sm.Store,
+ ) {
+ 	logger := log.TestingLogger()
+-	state, _ := stateStore.LoadFromDBOrGenesisFile(consensusReplayConfig.GenesisFile())
++	state, err := sm.MakeGenesisStateFromFile(consensusReplayConfig.GenesisFile())
++	require.NoError(t, err)
+ 	privValidator := loadPrivValidator(consensusReplayConfig)
+ 	cs := newStateWithConfigAndBlockStore(
+ 		consensusReplayConfig,
+@@ -81,7 +82,7 @@ func startNewStateAndWaitForBlock(t *testing.T, consensusReplayConfig *cfg.Confi
+ 	bytes, _ := os.ReadFile(cs.config.WalFile())
+ 	t.Logf("====== WAL: \n\r%X\n", bytes)
+ 
+-	err := cs.Start()
++	err = cs.Start()
+ 	require.NoError(t, err)
+ 	defer func() {
+ 		if err := cs.Stop(); err != nil {
+diff --git a/node/node.go b/node/node.go
+index 07212080a..cad39ed1b 100644
+--- a/node/node.go
++++ b/node/node.go
+@@ -24,7 +24,6 @@ import (
+ 	"github.com/tendermint/tendermint/crypto"
+ 	"github.com/tendermint/tendermint/evidence"
+ 
+-	cmtjson "github.com/tendermint/tendermint/libs/json"
+ 	"github.com/tendermint/tendermint/libs/log"
+ 	cmtpubsub "github.com/tendermint/tendermint/libs/pubsub"
+ 	"github.com/tendermint/tendermint/libs/service"
+@@ -724,7 +723,17 @@ func NewNode(config *cfg.Config,
+ 		DiscardABCIResponses: config.Storage.DiscardABCIResponses,
+ 	})
+ 
+-	state, genDoc, err := LoadStateFromDBOrGenesisDocProvider(stateDB, genesisDocProvider)
++	genDoc, err := genesisDocProvider()
++	if err != nil {
++		return nil, err
++	}
++
++	err = genDoc.ValidateAndComplete()
++	if err != nil {
++		return nil, fmt.Errorf("error in genesis doc: %w", err)
++	}
++
++	state, err := loadStateFromDBOrGenesisDocProvider(stateStore, genDoc)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -1386,66 +1395,34 @@ func makeNodeInfo(
+ 
+ //------------------------------------------------------------------------------
+ 
+-var genesisDocKey = []byte("genesisDoc")
+-
+-// LoadStateFromDBOrGenesisDocProvider attempts to load the state from the
++// loadStateFromDBOrGenesisDocProvider attempts to load the state from the
+ // database, or creates one using the given genesisDocProvider. On success this also
+ // returns the genesis doc loaded through the given provider.
+-func LoadStateFromDBOrGenesisDocProvider(
+-	stateDB dbm.DB,
+-	genesisDocProvider GenesisDocProvider,
+-) (sm.State, *types.GenesisDoc, error) {
+-	// Get genesis doc
+-	genDoc, err := loadGenesisDoc(stateDB)
+-	if err != nil {
+-		genDoc, err = genesisDocProvider()
+-		if err != nil {
+-			return sm.State{}, nil, err
+-		}
+-		// save genesis doc to prevent a certain class of user errors (e.g. when it
+-		// was changed, accidentally or not). Also good for audit trail.
+-		if err := saveGenesisDoc(stateDB, genDoc); err != nil {
+-			return sm.State{}, nil, err
+-		}
+-	}
+-	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+-		DiscardABCIResponses: false,
+-	})
+-	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
+-	if err != nil {
+-		return sm.State{}, nil, err
+-	}
+-	return state, genDoc, nil
+-}
++func loadStateFromDBOrGenesisDocProvider(
++	stateStore sm.Store,
++	genDoc *types.GenesisDoc,
++) (sm.State, error) {
+ 
+-// panics if failed to unmarshal bytes
+-func loadGenesisDoc(db dbm.DB) (*types.GenesisDoc, error) {
+-	b, err := db.Get(genesisDocKey)
++	// 1. Attempt to load state form the database
++	state, err := stateStore.Load()
+ 	if err != nil {
+-		panic(err)
++		return sm.State{}, err
+ 	}
+-	if len(b) == 0 {
+-		return nil, errors.New("genesis doc not found")
+-	}
+-	var genDoc *types.GenesisDoc
+-	err = cmtjson.Unmarshal(b, &genDoc)
+-	if err != nil {
+-		panic(fmt.Sprintf("Failed to load genesis doc due to unmarshaling error: %v (bytes: %X)", err, b))
+-	}
+-	return genDoc, nil
+-}
+ 
+-// panics if failed to marshal the given genesis document
+-func saveGenesisDoc(db dbm.DB, genDoc *types.GenesisDoc) error {
+-	b, err := cmtjson.Marshal(genDoc)
+-	if err != nil {
+-		return fmt.Errorf("failed to save genesis doc due to marshaling error: %w", err)
+-	}
+-	if err := db.SetSync(genesisDocKey, b); err != nil {
+-		return err
++	if state.IsEmpty() {
++		// 2. If it's not there, load it from the genesis doc
++		state, err = sm.MakeGenesisState(genDoc)
++		if err != nil {
++			return sm.State{}, err
++		}
++
++		// 3. Save the new state to disk
++		if err := stateStore.Save(state); err != nil {
++			return sm.State{}, err
++		}
+ 	}
+ 
+-	return nil
++	return state, nil
+ }
+ 
+ func createAndStartPrivValidatorSocketClient(
+diff --git a/state/state_test.go b/state/state_test.go
+index 4ce87ddce..97dce7aed 100644
+--- a/state/state_test.go
++++ b/state/state_test.go
+@@ -33,8 +33,11 @@ func setupTestCase(t *testing.T) (func(t *testing.T), dbm.DB, sm.State) {
+ 		DiscardABCIResponses: false,
+ 	})
+ 	require.NoError(t, err)
+-	state, err := stateStore.LoadFromDBOrGenesisFile(config.GenesisFile())
++	state, err := stateStore.Load()
++	require.NoError(t, err)
++	state, err = sm.MakeGenesisStateFromFile(config.GenesisFile())
+ 	assert.NoError(t, err, "expected no error on LoadStateFromDBOrGenesisFile")
++	assert.NotNil(t, state)
+ 	err = stateStore.Save(state)
+ 	require.NoError(t, err)
+ 
+diff --git a/state/store.go b/state/store.go
+index 3fbadccdc..c7e49652e 100644
+--- a/state/store.go
++++ b/state/store.go
+@@ -50,12 +50,6 @@ var (
+ // It is used to retrieve current state and save and load ABCI responses,
+ // validators and consensus parameters
+ type Store interface {
+-	// LoadFromDBOrGenesisFile loads the most recent state.
+-	// If the chain is new it will use the genesis file from the provided genesis file path as the current state.
+-	LoadFromDBOrGenesisFile(string) (State, error)
+-	// LoadFromDBOrGenesisDoc loads the most recent state.
+-	// If the chain is new it will use the genesis doc as the current state.
+-	LoadFromDBOrGenesisDoc(*types.GenesisDoc) (State, error)
+ 	// Load loads the current state of the blockchain
+ 	Load() (State, error)
+ 	// LoadValidators loads the validator set at a given height
+diff --git a/state/store_test.go b/state/store_test.go
+index 5a0838835..c8a35ae63 100644
+--- a/state/store_test.go
++++ b/state/store_test.go
+@@ -59,7 +59,7 @@ func BenchmarkLoadValidators(b *testing.B) {
+ 	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+ 		DiscardABCIResponses: false,
+ 	})
+-	state, err := stateStore.LoadFromDBOrGenesisFile(config.GenesisFile())
++	state, err := sm.MakeGenesisStateFromFile(config.GenesisFile())
+ 	if err != nil {
+ 		b.Fatal(err)
+ 	}
+diff --git a/state/tx_filter_test.go b/state/tx_filter_test.go
+index 63fd34b1b..362a5b37c 100644
+--- a/state/tx_filter_test.go
++++ b/state/tx_filter_test.go
+@@ -1,14 +1,11 @@
+ package state_test
+ 
+ import (
+-	"os"
+ 	"testing"
+ 
+ 	"github.com/stretchr/testify/assert"
+ 	"github.com/stretchr/testify/require"
+ 
+-	dbm "github.com/cometbft/cometbft-db"
+-
+ 	cmtrand "github.com/tendermint/tendermint/libs/rand"
+ 	sm "github.com/tendermint/tendermint/state"
+ 	"github.com/tendermint/tendermint/types"
+@@ -31,12 +28,7 @@ func TestTxFilter(t *testing.T) {
+ 	}
+ 
+ 	for i, tc := range testCases {
+-		stateDB, err := dbm.NewDB("state", "memdb", os.TempDir())
+-		require.NoError(t, err)
+-		stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+-			DiscardABCIResponses: false,
+-		})
+-		state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++		state, err := sm.MakeGenesisState(genDoc)
+ 		require.NoError(t, err)
+ 
+ 		f := sm.TxPreCheck(state)
+diff --git a/store/store_test.go b/store/store_test.go
+index 3529695c9..8ceae9984 100644
+--- a/store/store_test.go
++++ b/store/store_test.go
+@@ -59,11 +59,7 @@ func makeStateAndBlockStore(logger log.Logger) (sm.State, *BlockStore, cleanupFu
+ 	// blockDB := dbm.NewDebugDB("blockDB", dbm.NewMemDB())
+ 	// stateDB := dbm.NewDebugDB("stateDB", dbm.NewMemDB())
+ 	blockDB := dbm.NewMemDB()
+-	stateDB := dbm.NewMemDB()
+-	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+-		DiscardABCIResponses: false,
+-	})
+-	state, err := stateStore.LoadFromDBOrGenesisFile(config.GenesisFile())
++	state, err := sm.MakeGenesisStateFromFile(config.GenesisFile())
+ 	if err != nil {
+ 		panic(fmt.Errorf("error constructing state from genesis file: %w", err))
+ 	}
+@@ -371,10 +367,7 @@ func TestBlockStoreSaveLoadBlock(t *testing.T) {
+ func TestLoadBaseMeta(t *testing.T) {
+ 	config := cfg.ResetTestRoot("blockchain_reactor_test")
+ 	defer os.RemoveAll(config.RootDir)
+-	stateStore := sm.NewStore(dbm.NewMemDB(), sm.StoreOptions{
+-		DiscardABCIResponses: false,
+-	})
+-	state, err := stateStore.LoadFromDBOrGenesisFile(config.GenesisFile())
++	state, err := sm.MakeGenesisStateFromFile(config.GenesisFile())
+ 	require.NoError(t, err)
+ 	bs := NewBlockStore(dbm.NewMemDB())
+ 
+@@ -429,10 +422,7 @@ func TestLoadBlockPart(t *testing.T) {
+ func TestPruneBlocks(t *testing.T) {
+ 	config := cfg.ResetTestRoot("blockchain_reactor_test")
+ 	defer os.RemoveAll(config.RootDir)
+-	stateStore := sm.NewStore(dbm.NewMemDB(), sm.StoreOptions{
+-		DiscardABCIResponses: false,
+-	})
+-	state, err := stateStore.LoadFromDBOrGenesisFile(config.GenesisFile())
++	state, err := sm.MakeGenesisStateFromFile(config.GenesisFile())
+ 	require.NoError(t, err)
+ 	db := dbm.NewMemDB()
+ 	bs := NewBlockStore(db)
+diff --git a/test/maverick/node/node.go b/test/maverick/node/node.go
+index 1d6050686..a6fc67192 100644
+--- a/test/maverick/node/node.go
++++ b/test/maverick/node/node.go
+@@ -1402,10 +1402,7 @@ func LoadStateFromDBOrGenesisDocProvider(
+ 		// was changed, accidentally or not). Also good for audit trail.
+ 		saveGenesisDoc(stateDB, genDoc)
+ 	}
+-	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
+-		DiscardABCIResponses: false,
+-	})
+-	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
++	state, err := sm.MakeGenesisState(genDoc)
+ 	if err != nil {
+ 		return sm.State{}, nil, err
+ 	}
+-- 
+2.39.2
+
