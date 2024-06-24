@@ -1,0 +1,93 @@
+From 42fde52ba863f636b7839abeaf379a810ccf8df8 Mon Sep 17 00:00:00 2001
+From: Robert Pirtle <Astropirtle@gmail.com>
+Date: Mon, 24 Jun 2024 16:10:50 -0700
+Subject: [PATCH] feat: expose nodeDB's DeleteVersionsFrom method (#1)
+
+---
+ go.mod               |  2 +-
+ mutable_tree.go      | 10 ++++++++++
+ mutable_tree_test.go | 27 +++++++++++++++++++++++++++
+ 3 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/go.mod b/go.mod
+index 671c332..f35d0a6 100644
+--- a/go.mod
++++ b/go.mod
+@@ -5,6 +5,7 @@ go 1.18
+ require (
+ 	github.com/cometbft/cometbft-db v0.7.0
+ 	github.com/confio/ics23/go v0.9.0
++	github.com/gogo/protobuf v1.3.2
+ 	github.com/golang/mock v1.6.0
+ 	github.com/golangci/golangci-lint v1.50.1
+ 	github.com/stretchr/testify v1.8.1
+@@ -65,7 +66,6 @@ require (
+ 	github.com/go-xmlfmt/xmlfmt v0.0.0-20191208150333-d5b6f63a941b // indirect
+ 	github.com/gobwas/glob v0.2.3 // indirect
+ 	github.com/gofrs/flock v0.8.1 // indirect
+-	github.com/gogo/protobuf v1.3.2 // indirect
+ 	github.com/golang/protobuf v1.5.2 // indirect
+ 	github.com/golang/snappy v0.0.4 // indirect
+ 	github.com/golangci/check v0.0.0-20180506172741-cfe4005ccda2 // indirect
+diff --git a/mutable_tree.go b/mutable_tree.go
+index 4f953b9..9501192 100644
+--- a/mutable_tree.go
++++ b/mutable_tree.go
+@@ -1122,6 +1122,16 @@ func (tree *MutableTree) DeleteVersion(version int64) error {
+ 	return nil
+ }
+ 
++// DeleteVersionsFrom removes from the given version upwards (inclusive) from the MutableTree.
++// It will not block the SaveVersion() call, instead it will be queued and executed deferred.
++func (tree *MutableTree) DeleteVersionsFrom(fromVersion int64) error {
++	if err := tree.ndb.DeleteVersionsFrom(fromVersion); err != nil {
++		return err
++	}
++
++	return tree.ndb.Commit()
++}
++
+ // Rotate right and return the new node and orphan.
+ func (tree *MutableTree) rotateRight(node *Node) (*Node, *Node, error) {
+ 	version := tree.version + 1
+diff --git a/mutable_tree_test.go b/mutable_tree_test.go
+index 6a1e256..284fa81 100644
+--- a/mutable_tree_test.go
++++ b/mutable_tree_test.go
+@@ -138,6 +138,33 @@ func TestDelete(t *testing.T) {
+ 	require.Equal(t, 0, bytes.Compare([]byte("Fred"), proof.GetExist().Value))
+ }
+ 
++func TestDeleteVersionsFrom(t *testing.T) {
++	tree := setupMutableTree(t, false)
++
++	_, _, err := tree.set([]byte("k1"), []byte("Wilma"))
++	require.NoError(t, err)
++	_, version, err := tree.SaveVersion()
++	require.NoError(t, err)
++	_, _, err = tree.SaveVersion()
++	require.NoError(t, err)
++	_, _, err = tree.SaveVersion()
++	require.NoError(t, err)
++
++	require.NoError(t, tree.DeleteVersionsFrom(version+1))
++
++	proof, err := tree.GetVersionedProof([]byte("k1"), version)
++	require.Nil(t, err)
++	require.Equal(t, 0, bytes.Compare([]byte("Wilma"), proof.GetExist().Value))
++
++	proof, err = tree.GetVersionedProof([]byte("k1"), version+1)
++	require.EqualError(t, err, ErrVersionDoesNotExist.Error())
++	require.Nil(t, proof)
++
++	proof, err = tree.GetVersionedProof([]byte("k1"), version+2)
++	require.EqualError(t, err, ErrVersionDoesNotExist.Error())
++	require.Nil(t, proof)
++}
++
+ func TestGetRemove(t *testing.T) {
+ 	require := require.New(t)
+ 	tree := setupMutableTree(t, false)
+-- 
+2.39.3 (Apple Git-146)
+
