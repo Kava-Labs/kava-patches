@@ -1,0 +1,472 @@
+From 91c24c54ac2a6b1d0e773a9994cedb03c4aed93a Mon Sep 17 00:00:00 2001
+From: Draco <draco@dracoli.com>
+Date: Mon, 1 Jan 2024 16:51:24 -0500
+Subject: [PATCH] Apply v46 patches See
+ https://github.com/Kava-Labs/cosmos-sdk/pull/536
+
+---
+ crypto/ledger/ledger_mock.go      |   2 +-
+ crypto/ledger/ledger_secp256k1.go |  10 ++-
+ go.mod                            |   2 +-
+ go.sum                            |   4 +-
+ x/bank/keeper/keeper.go           |  18 ++++
+ x/gov/keeper/keeper.go            |   8 ++
+ x/gov/keeper/tally.go             | 116 +-----------------------
+ x/gov/keeper/tally_handler.go     | 144 ++++++++++++++++++++++++++++++
+ x/gov/keeper/vote.go              |   4 +-
+ x/gov/types/v1/tally_handler.go   |  10 +++
+ 10 files changed, 198 insertions(+), 120 deletions(-)
+ create mode 100644 x/gov/keeper/tally_handler.go
+ create mode 100644 x/gov/types/v1/tally_handler.go
+
+diff --git a/crypto/ledger/ledger_mock.go b/crypto/ledger/ledger_mock.go
+index 791ef78b16..3333c37255 100644
+--- a/crypto/ledger/ledger_mock.go
++++ b/crypto/ledger/ledger_mock.go
+@@ -86,7 +86,7 @@ func (mock LedgerSECP256K1Mock) GetAddressPubKeySECP256K1(derivationPath []uint3
+ 	return pk, addr, err
+ }
+ 
+-func (mock LedgerSECP256K1Mock) SignSECP256K1(derivationPath []uint32, message []byte) ([]byte, error) {
++func (mock LedgerSECP256K1Mock) SignSECP256K1(derivationPath []uint32, message []byte, p2 byte) ([]byte, error) {
+ 	path := hd.NewParams(derivationPath[0], derivationPath[1], derivationPath[2], derivationPath[3] != 0, derivationPath[4])
+ 	seed, err := bip39.NewSeedWithErrorChecking(testdata.TestMnemonic, "")
+ 	if err != nil {
+diff --git a/crypto/ledger/ledger_secp256k1.go b/crypto/ledger/ledger_secp256k1.go
+index 2aa996df9d..da3eb2c2ae 100644
+--- a/crypto/ledger/ledger_secp256k1.go
++++ b/crypto/ledger/ledger_secp256k1.go
+@@ -35,7 +35,10 @@ type (
+ 		// Returns a compressed pubkey and bech32 address (requires user confirmation)
+ 		GetAddressPubKeySECP256K1([]uint32, string) ([]byte, string, error)
+ 		// Signs a message (requires user confirmation)
+-		SignSECP256K1([]uint32, []byte) ([]byte, error)
++		// The last byte denotes the SIGN_MODE to be used by Ledger: 0 for
++		// LEGACY_AMINO_JSON, 1 for TEXTUAL. It corresponds to the P2 value
++		// in https://github.com/cosmos/ledger-cosmos/blob/main/docs/APDUSPEC.md
++		SignSECP256K1([]uint32, []byte, byte) ([]byte, error)
+ 	}
+ 
+ 	// Options hosts customization options to account for differences in Ledger
+@@ -275,7 +278,10 @@ func sign(device SECP256K1, pkl PrivKeyLedgerSecp256k1, msg []byte) ([]byte, err
+ 		return nil, err
+ 	}
+ 
+-	sig, err := device.SignSECP256K1(pkl.Path.DerivationPath(), msg)
++	// 0 for LEGACY_AMINO_JSON -- only supporting this for now to include path
++	// array size fix in cosmos-ledger-go v0.13.1
++	// Textual sign mode comes in cosmos v0.50.x
++	sig, err := device.SignSECP256K1(pkl.Path.DerivationPath(), msg, 0)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/go.mod b/go.mod
+index 7bd3b692d3..b4b71a8af5 100644
+--- a/go.mod
++++ b/go.mod
+@@ -27,7 +27,7 @@ require (
+ 	github.com/cosmos/gogogateway v1.2.0
+ 	github.com/cosmos/gogoproto v1.4.10
+ 	github.com/cosmos/iavl v0.20.1
+-	github.com/cosmos/ledger-cosmos-go v0.12.4
++	github.com/cosmos/ledger-cosmos-go v0.13.1
+ 	github.com/golang/mock v1.6.0
+ 	github.com/golang/protobuf v1.5.3
+ 	github.com/google/gofuzz v1.2.0
+diff --git a/go.sum b/go.sum
+index 730f81cdeb..6f2e4a7343 100644
+--- a/go.sum
++++ b/go.sum
+@@ -343,8 +343,8 @@ github.com/cosmos/iavl v0.20.1 h1:rM1kqeG3/HBT85vsZdoSNsehciqUQPWrR4BYmqE2+zg=
+ github.com/cosmos/iavl v0.20.1/go.mod h1:WO7FyvaZJoH65+HFOsDir7xU9FWk2w9cHXNW1XHcl7A=
+ github.com/cosmos/keyring v1.2.0 h1:8C1lBP9xhImmIabyXW4c3vFjjLiBdGCmfLUfeZlV1Yo=
+ github.com/cosmos/keyring v1.2.0/go.mod h1:fc+wB5KTk9wQ9sDx0kFXB3A0MaeGHM9AwRStKOQ5vOA=
+-github.com/cosmos/ledger-cosmos-go v0.12.4 h1:drvWt+GJP7Aiw550yeb3ON/zsrgW0jgh5saFCr7pDnw=
+-github.com/cosmos/ledger-cosmos-go v0.12.4/go.mod h1:fjfVWRf++Xkygt9wzCsjEBdjcf7wiiY35fv3ctT+k4M=
++github.com/cosmos/ledger-cosmos-go v0.13.1 h1:12ac9+GwBb9BjP7X5ygpFk09Itwzjzfmg6A2CWFjoVs=
++github.com/cosmos/ledger-cosmos-go v0.13.1/go.mod h1:5tv2RVJEd2+Y38TIQN4CRjJeQGyqOEiKJDfqhk5UjqE=
+ github.com/cosmos/rosetta-sdk-go v0.10.0 h1:E5RhTruuoA7KTIXUcMicL76cffyeoyvNybzUGSKFTcM=
+ github.com/cosmos/rosetta-sdk-go v0.10.0/go.mod h1:SImAZkb96YbwvoRkzSMQB6noNJXFgWl/ENIznEoYQI4=
+ github.com/cpuguy83/go-md2man v1.0.10/go.mod h1:SmD6nW6nTyfqj6ABTjUi3V3JVMnlJmwcJI5acqYI6dE=
+diff --git a/x/bank/keeper/keeper.go b/x/bank/keeper/keeper.go
+index 1277c5eb3c..d0c59e8ec6 100644
+--- a/x/bank/keeper/keeper.go
++++ b/x/bank/keeper/keeper.go
+@@ -179,6 +179,15 @@ func (k BaseKeeper) DelegateCoins(ctx sdk.Context, delegatorAddr, moduleAccAddr
+ 		return err
+ 	}
+ 
++	ctx.EventManager().EmitEvent(
++		sdk.NewEvent(
++			types.EventTypeTransfer,
++			sdk.NewAttribute(types.AttributeKeyRecipient, moduleAccAddr.String()),
++			sdk.NewAttribute(types.AttributeKeySender, delegatorAddr.String()),
++			sdk.NewAttribute(sdk.AttributeKeyAmount, amt.String()),
++		),
++	)
++
+ 	return nil
+ }
+ 
+@@ -211,6 +220,15 @@ func (k BaseKeeper) UndelegateCoins(ctx sdk.Context, moduleAccAddr, delegatorAdd
+ 		return err
+ 	}
+ 
++	ctx.EventManager().EmitEvent(
++		sdk.NewEvent(
++			types.EventTypeTransfer,
++			sdk.NewAttribute(types.AttributeKeyRecipient, delegatorAddr.String()),
++			sdk.NewAttribute(types.AttributeKeySender, moduleAccAddr.String()),
++			sdk.NewAttribute(sdk.AttributeKeyAmount, amt.String()),
++		),
++	)
++
+ 	return nil
+ }
+ 
+diff --git a/x/gov/keeper/keeper.go b/x/gov/keeper/keeper.go
+index ecd8c3dea3..5850ae746a 100644
+--- a/x/gov/keeper/keeper.go
++++ b/x/gov/keeper/keeper.go
+@@ -39,6 +39,9 @@ type Keeper struct {
+ 	// Msg server router
+ 	router *baseapp.MsgServiceRouter
+ 
++	// Tally handler for tallying votes. If not provided, the default one will be used.
++	tallyHandler v1.TallyHandler
++
+ 	config types.Config
+ 
+ 	// the address capable of executing a MsgUpdateParams message. Typically, this
+@@ -119,6 +122,11 @@ func (keeper *Keeper) SetLegacyRouter(router v1beta1.Router) {
+ 	keeper.legacyRouter = router
+ }
+ 
++func (keeper *Keeper) SetTallyHandler(th v1.TallyHandler) *Keeper {
++	keeper.tallyHandler = th
++	return keeper
++}
++
+ // Logger returns a module-specific logger.
+ func (keeper Keeper) Logger(ctx sdk.Context) log.Logger {
+ 	return ctx.Logger().With("module", "x/"+types.ModuleName)
+diff --git a/x/gov/keeper/tally.go b/x/gov/keeper/tally.go
+index 863c64f514..3c2914d0fa 100644
+--- a/x/gov/keeper/tally.go
++++ b/x/gov/keeper/tally.go
+@@ -1,10 +1,8 @@
+ package keeper
+ 
+ import (
+-	"cosmossdk.io/math"
+ 	sdk "github.com/cosmos/cosmos-sdk/types"
+ 	v1 "github.com/cosmos/cosmos-sdk/x/gov/types/v1"
+-	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
+ )
+ 
+ // TODO: Break into several smaller functions for clarity
+@@ -12,116 +10,10 @@ import (
+ // Tally iterates over the votes and updates the tally of a proposal based on the voting power of the
+ // voters
+ func (keeper Keeper) Tally(ctx sdk.Context, proposal v1.Proposal) (passes bool, burnDeposits bool, tallyResults v1.TallyResult) {
+-	results := make(map[v1.VoteOption]sdk.Dec)
+-	results[v1.OptionYes] = math.LegacyZeroDec()
+-	results[v1.OptionAbstain] = math.LegacyZeroDec()
+-	results[v1.OptionNo] = math.LegacyZeroDec()
+-	results[v1.OptionNoWithVeto] = math.LegacyZeroDec()
+-
+-	totalVotingPower := math.LegacyZeroDec()
+-	currValidators := make(map[string]v1.ValidatorGovInfo)
+-
+-	// fetch all the bonded validators, insert them into currValidators
+-	keeper.sk.IterateBondedValidatorsByPower(ctx, func(index int64, validator stakingtypes.ValidatorI) (stop bool) {
+-		currValidators[validator.GetOperator().String()] = v1.NewValidatorGovInfo(
+-			validator.GetOperator(),
+-			validator.GetBondedTokens(),
+-			validator.GetDelegatorShares(),
+-			math.LegacyZeroDec(),
+-			v1.WeightedVoteOptions{},
+-		)
+-
+-		return false
+-	})
+-
+-	keeper.IterateVotes(ctx, proposal.Id, func(vote v1.Vote) bool {
+-		// if validator, just record it in the map
+-		voter := sdk.MustAccAddressFromBech32(vote.Voter)
+-
+-		valAddrStr := sdk.ValAddress(voter.Bytes()).String()
+-		if val, ok := currValidators[valAddrStr]; ok {
+-			val.Vote = vote.Options
+-			currValidators[valAddrStr] = val
+-		}
+-
+-		// iterate over all delegations from voter, deduct from any delegated-to validators
+-		keeper.sk.IterateDelegations(ctx, voter, func(index int64, delegation stakingtypes.DelegationI) (stop bool) {
+-			valAddrStr := delegation.GetValidatorAddr().String()
+-
+-			if val, ok := currValidators[valAddrStr]; ok {
+-				// There is no need to handle the special case that validator address equal to voter address.
+-				// Because voter's voting power will tally again even if there will be deduction of voter's voting power from validator.
+-				val.DelegatorDeductions = val.DelegatorDeductions.Add(delegation.GetShares())
+-				currValidators[valAddrStr] = val
+-
+-				// delegation shares * bonded / total shares
+-				votingPower := delegation.GetShares().MulInt(val.BondedTokens).Quo(val.DelegatorShares)
+-
+-				for _, option := range vote.Options {
+-					weight, _ := sdk.NewDecFromStr(option.Weight)
+-					subPower := votingPower.Mul(weight)
+-					results[option.Option] = results[option.Option].Add(subPower)
+-				}
+-				totalVotingPower = totalVotingPower.Add(votingPower)
+-			}
+-
+-			return false
+-		})
+-
+-		keeper.deleteVote(ctx, vote.ProposalId, voter)
+-		return false
+-	})
+-
+-	// iterate over the validators again to tally their voting power
+-	for _, val := range currValidators {
+-		if len(val.Vote) == 0 {
+-			continue
+-		}
+-
+-		sharesAfterDeductions := val.DelegatorShares.Sub(val.DelegatorDeductions)
+-		votingPower := sharesAfterDeductions.MulInt(val.BondedTokens).Quo(val.DelegatorShares)
+-
+-		for _, option := range val.Vote {
+-			weight, _ := sdk.NewDecFromStr(option.Weight)
+-			subPower := votingPower.Mul(weight)
+-			results[option.Option] = results[option.Option].Add(subPower)
+-		}
+-		totalVotingPower = totalVotingPower.Add(votingPower)
+-	}
+-
+-	params := keeper.GetParams(ctx)
+-	tallyResults = v1.NewTallyResultFromMap(results)
+-
+-	// TODO: Upgrade the spec to cover all of these cases & remove pseudocode.
+-	// If there is no staked coins, the proposal fails
+-	if keeper.sk.TotalBondedTokens(ctx).IsZero() {
+-		return false, false, tallyResults
+-	}
+-
+-	// If there is not enough quorum of votes, the proposal fails
+-	percentVoting := totalVotingPower.Quo(sdk.NewDecFromInt(keeper.sk.TotalBondedTokens(ctx)))
+-	quorum, _ := sdk.NewDecFromStr(params.Quorum)
+-	if percentVoting.LT(quorum) {
+-		return false, params.BurnVoteQuorum, tallyResults
+-	}
+-
+-	// If no one votes (everyone abstains), proposal fails
+-	if totalVotingPower.Sub(results[v1.OptionAbstain]).Equal(math.LegacyZeroDec()) {
+-		return false, false, tallyResults
+-	}
+-
+-	// If more than 1/3 of voters veto, proposal fails
+-	vetoThreshold, _ := sdk.NewDecFromStr(params.VetoThreshold)
+-	if results[v1.OptionNoWithVeto].Quo(totalVotingPower).GT(vetoThreshold) {
+-		return false, params.BurnVoteVeto, tallyResults
+-	}
+-
+-	// If more than 1/2 of non-abstaining voters vote Yes, proposal passes
+-	threshold, _ := sdk.NewDecFromStr(params.Threshold)
+-	if results[v1.OptionYes].Quo(totalVotingPower.Sub(results[v1.OptionAbstain])).GT(threshold) {
+-		return true, false, tallyResults
++	tallyHandler := keeper.tallyHandler
++	if tallyHandler == nil {
++		tallyHandler = NewDefaultTallyHandler(keeper)
+ 	}
+ 
+-	// If more than 1/2 of non-abstaining voters vote No, proposal fails
+-	return false, false, tallyResults
++	return tallyHandler.Tally(ctx, proposal)
+ }
+diff --git a/x/gov/keeper/tally_handler.go b/x/gov/keeper/tally_handler.go
+new file mode 100644
+index 0000000000..d227885cdf
+--- /dev/null
++++ b/x/gov/keeper/tally_handler.go
+@@ -0,0 +1,144 @@
++package keeper
++
++import (
++	"cosmossdk.io/math"
++	sdk "github.com/cosmos/cosmos-sdk/types"
++	v1 "github.com/cosmos/cosmos-sdk/x/gov/types/v1"
++	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
++)
++
++var _ v1.TallyHandler = DefaultTallyHandler{}
++
++// DefaultTallyHandler is the default tally handler for x/gov
++type DefaultTallyHandler struct {
++	keeper Keeper
++}
++
++// NewDefaultTallyHandler creates a new tally handler.
++func NewDefaultTallyHandler(k Keeper) DefaultTallyHandler {
++	return DefaultTallyHandler{
++		keeper: k,
++	}
++}
++
++// TODO: Break Tally into several smaller functions for clarity
++
++// Tally iterates over the votes and updates the tally of a proposal based on the voting power of the
++// voters
++func (dth DefaultTallyHandler) Tally(
++	ctx sdk.Context,
++	proposal v1.Proposal,
++) (passes bool, burnDeposits bool, tallyResults v1.TallyResult) {
++	results := make(map[v1.VoteOption]sdk.Dec)
++	results[v1.OptionYes] = math.LegacyZeroDec()
++	results[v1.OptionAbstain] = math.LegacyZeroDec()
++	results[v1.OptionNo] = math.LegacyZeroDec()
++	results[v1.OptionNoWithVeto] = math.LegacyZeroDec()
++
++	totalVotingPower := math.LegacyZeroDec()
++	currValidators := make(map[string]v1.ValidatorGovInfo)
++
++	// fetch all the bonded validators, insert them into currValidators
++	dth.keeper.sk.IterateBondedValidatorsByPower(ctx, func(index int64, validator stakingtypes.ValidatorI) (stop bool) {
++		currValidators[validator.GetOperator().String()] = v1.NewValidatorGovInfo(
++			validator.GetOperator(),
++			validator.GetBondedTokens(),
++			validator.GetDelegatorShares(),
++			math.LegacyZeroDec(),
++			v1.WeightedVoteOptions{},
++		)
++
++		return false
++	})
++
++	dth.keeper.IterateVotes(ctx, proposal.Id, func(vote v1.Vote) bool {
++		// if validator, just record it in the map
++		voter := sdk.MustAccAddressFromBech32(vote.Voter)
++
++		valAddrStr := sdk.ValAddress(voter.Bytes()).String()
++		if val, ok := currValidators[valAddrStr]; ok {
++			val.Vote = vote.Options
++			currValidators[valAddrStr] = val
++		}
++
++		// iterate over all delegations from voter, deduct from any delegated-to validators
++		dth.keeper.sk.IterateDelegations(ctx, voter, func(index int64, delegation stakingtypes.DelegationI) (stop bool) {
++			valAddrStr := delegation.GetValidatorAddr().String()
++
++			if val, ok := currValidators[valAddrStr]; ok {
++				// There is no need to handle the special case that validator address equal to voter address.
++				// Because voter's voting power will tally again even if there will be deduction of voter's voting power from validator.
++				val.DelegatorDeductions = val.DelegatorDeductions.Add(delegation.GetShares())
++				currValidators[valAddrStr] = val
++
++				// delegation shares * bonded / total shares
++				votingPower := delegation.GetShares().MulInt(val.BondedTokens).Quo(val.DelegatorShares)
++
++				for _, option := range vote.Options {
++					weight, _ := sdk.NewDecFromStr(option.Weight)
++					subPower := votingPower.Mul(weight)
++					results[option.Option] = results[option.Option].Add(subPower)
++				}
++				totalVotingPower = totalVotingPower.Add(votingPower)
++			}
++
++			return false
++		})
++
++		dth.keeper.DeleteVote(ctx, vote.ProposalId, voter)
++		return false
++	})
++
++	// iterate over the validators again to tally their voting power
++	for _, val := range currValidators {
++		if len(val.Vote) == 0 {
++			continue
++		}
++
++		sharesAfterDeductions := val.DelegatorShares.Sub(val.DelegatorDeductions)
++		votingPower := sharesAfterDeductions.MulInt(val.BondedTokens).Quo(val.DelegatorShares)
++
++		for _, option := range val.Vote {
++			weight, _ := sdk.NewDecFromStr(option.Weight)
++			subPower := votingPower.Mul(weight)
++			results[option.Option] = results[option.Option].Add(subPower)
++		}
++		totalVotingPower = totalVotingPower.Add(votingPower)
++	}
++
++	params := dth.keeper.GetParams(ctx)
++	tallyResults = v1.NewTallyResultFromMap(results)
++
++	// TODO: Upgrade the spec to cover all of these cases & remove pseudocode.
++	// If there is no staked coins, the proposal fails
++	if dth.keeper.sk.TotalBondedTokens(ctx).IsZero() {
++		return false, false, tallyResults
++	}
++
++	// If there is not enough quorum of votes, the proposal fails
++	percentVoting := totalVotingPower.Quo(sdk.NewDecFromInt(dth.keeper.sk.TotalBondedTokens(ctx)))
++	quorum, _ := sdk.NewDecFromStr(params.Quorum)
++	if percentVoting.LT(quorum) {
++		return false, params.BurnVoteQuorum, tallyResults
++	}
++
++	// If no one votes (everyone abstains), proposal fails
++	if totalVotingPower.Sub(results[v1.OptionAbstain]).Equal(math.LegacyZeroDec()) {
++		return false, false, tallyResults
++	}
++
++	// If more than 1/3 of voters veto, proposal fails
++	vetoThreshold, _ := sdk.NewDecFromStr(params.VetoThreshold)
++	if results[v1.OptionNoWithVeto].Quo(totalVotingPower).GT(vetoThreshold) {
++		return false, params.BurnVoteVeto, tallyResults
++	}
++
++	// If more than 1/2 of non-abstaining voters vote Yes, proposal passes
++	threshold, _ := sdk.NewDecFromStr(params.Threshold)
++	if results[v1.OptionYes].Quo(totalVotingPower.Sub(results[v1.OptionAbstain])).GT(threshold) {
++		return true, false, tallyResults
++	}
++
++	// If more than 1/2 of non-abstaining voters vote No, proposal fails
++	return false, false, tallyResults
++}
+diff --git a/x/gov/keeper/vote.go b/x/gov/keeper/vote.go
+index 2f24c37d2e..ef0c5c6802 100644
+--- a/x/gov/keeper/vote.go
++++ b/x/gov/keeper/vote.go
+@@ -118,8 +118,8 @@ func (keeper Keeper) IterateVotes(ctx sdk.Context, proposalID uint64, cb func(vo
+ 	}
+ }
+ 
+-// deleteVote deletes a vote from a given proposalID and voter from the store
+-func (keeper Keeper) deleteVote(ctx sdk.Context, proposalID uint64, voterAddr sdk.AccAddress) {
++// DeleteVote deletes a vote from a given proposalID and voter from the store
++func (keeper Keeper) DeleteVote(ctx sdk.Context, proposalID uint64, voterAddr sdk.AccAddress) {
+ 	store := ctx.KVStore(keeper.storeKey)
+ 	store.Delete(types.VoteKey(proposalID, voterAddr))
+ }
+diff --git a/x/gov/types/v1/tally_handler.go b/x/gov/types/v1/tally_handler.go
+new file mode 100644
+index 0000000000..5c49fe9ee5
+--- /dev/null
++++ b/x/gov/types/v1/tally_handler.go
+@@ -0,0 +1,10 @@
++package v1
++
++import (
++	sdk "github.com/cosmos/cosmos-sdk/types"
++)
++
++// TallyHandler is the interface that is used for tallying votes.
++type TallyHandler interface {
++	Tally(sdk.Context, Proposal) (passes bool, burnDeposits bool, tallyResults TallyResult)
++}
+-- 
+2.39.3 (Apple Git-146)
+
