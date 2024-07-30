@@ -1,0 +1,65 @@
+From 6d8368fb58e8856d29debc52e40c9db01ca50a74 Mon Sep 17 00:00:00 2001
+From: Draco <draco@dracoli.com>
+Date: Fri, 19 Jan 2024 11:21:02 -0500
+Subject: [PATCH] Update server config min gas prices to support ; separator
+
+---
+ server/config/config.go      |  6 +++++-
+ server/config/config_test.go | 10 ++++++++++
+ 2 files changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/server/config/config.go b/server/config/config.go
+index f4ac30a30d..3145e773b5 100644
+--- a/server/config/config.go
++++ b/server/config/config.go
+@@ -3,6 +3,7 @@ package config
+ import (
+ 	"fmt"
+ 	"math"
++	"strings"
+ 
+ 	"github.com/spf13/viper"
+ 
+@@ -269,7 +270,10 @@ func (c *Config) GetMinGasPrices() sdk.DecCoins {
+ 		return sdk.DecCoins{}
+ 	}
+ 
+-	gasPrices, err := sdk.ParseDecCoins(c.MinGasPrices)
++	// replace `;` with `,` to support both `;` and `,` as separators in server config
++	minGasPrices := strings.ReplaceAll(c.MinGasPrices, ";", ",")
++
++	gasPrices, err := sdk.ParseDecCoins(minGasPrices)
+ 	if err != nil {
+ 		panic(fmt.Sprintf("invalid minimum gas prices: %v", err))
+ 	}
+diff --git a/server/config/config_test.go b/server/config/config_test.go
+index d4562374f7..841ad3519e 100644
+--- a/server/config/config_test.go
++++ b/server/config/config_test.go
+@@ -4,6 +4,7 @@ import (
+ 	"bytes"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+ 
+ 	"github.com/spf13/viper"
+@@ -31,6 +32,15 @@ func TestGetAndSetMinimumGas(t *testing.T) {
+ 	require.EqualValues(t, cfg.GetMinGasPrices(), input)
+ }
+ 
++func TestGetMinimumGasWithSemicolon(t *testing.T) {
++	cfg := DefaultConfig()
++	cfg.MinGasPrices = "0.001bar;5.00foo;0.01zoo"
++
++	exp, err := sdk.ParseDecCoins(strings.ReplaceAll(cfg.MinGasPrices, ";", ","))
++	require.NoError(t, err)
++	require.EqualValues(t, cfg.GetMinGasPrices(), exp)
++}
++
+ func TestIndexEventsMarshalling(t *testing.T) {
+ 	expectedIn := `index-events = ["key1", "key2", ]` + "\n"
+ 	cfg := DefaultConfig()
+-- 
+2.39.3 (Apple Git-146)
+

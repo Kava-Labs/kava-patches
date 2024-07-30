@@ -1,0 +1,142 @@
+From 9683c3135a8c6caadf29b6af6bbd3b7831a275ec Mon Sep 17 00:00:00 2001
+From: Robert Pirtle <Astropirtle@gmail.com>
+Date: Tue, 25 Jun 2024 15:20:13 -0700
+Subject: [PATCH] cli: add --unsafe-remove-modules flag to Rollback (#549)
+
+* rollback command accepts list of store keys names to forcibly delete
+
+this is useful for rolling back an upgrade that adds modules.
+rollbacks are performed by loading & committing the previous version.
+without this new functionality, the rollback will fail because no store
+version will exist for modules added during the upgrade.
+
+to properly rollback the state, pass in a list of the added module names
+and they will be completely removed before the rollback of pre-existing
+modules takes place:
+```
+chain rollback --unsafe-remove-modules mynewmodule,othernewmodule
+```
+---
+ server/rollback.go       | 14 +++++++++
+ store/rootmulti/store.go | 62 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 76 insertions(+)
+
+diff --git a/server/rollback.go b/server/rollback.go
+index ae2a7e0a08..a91e45b08d 100644
+--- a/server/rollback.go
++++ b/server/rollback.go
+@@ -8,11 +8,13 @@ import (
+ 
+ 	"github.com/cosmos/cosmos-sdk/client/flags"
+ 	"github.com/cosmos/cosmos-sdk/server/types"
++	"github.com/cosmos/cosmos-sdk/store/rootmulti"
+ )
+ 
+ // NewRollbackCmd creates a command to rollback tendermint and multistore state by one height.
+ func NewRollbackCmd(appCreator types.AppCreator, defaultNodeHome string) *cobra.Command {
+ 	var removeBlock bool
++	moduleKeysToDelete := make([]string, 0)
+ 
+ 	cmd := &cobra.Command{
+ 		Use:   "rollback",
+@@ -39,6 +41,17 @@ application.
+ 			if err != nil {
+ 				return fmt.Errorf("failed to rollback tendermint state: %w", err)
+ 			}
++
++			// for rolling back upgrades that add modules, we must first forcibly delete those.
++			// otherwise, the rollback will panic because no version of new modules will exist.
++			store := app.CommitMultiStore().(*rootmulti.Store)
++			for _, key := range moduleKeysToDelete {
++				fmt.Printf("deleting latest version of KVStore with key %s\n", key)
++				if err := store.DeleteLatestVersion(key); err != nil {
++					return err
++				}
++			}
++
+ 			// rollback the multistore
+ 
+ 			if err := app.CommitMultiStore().RollbackToVersion(height); err != nil {
+@@ -52,5 +65,6 @@ application.
+ 
+ 	cmd.Flags().String(flags.FlagHome, defaultNodeHome, "The application home directory")
+ 	cmd.Flags().BoolVar(&removeBlock, "hard", false, "remove last block as well as state")
++	cmd.Flags().StringSliceVar(&moduleKeysToDelete, "unsafe-remove-modules", []string{}, "force delete KV stores with the provided prefix. useful for rolling back an upgrade that adds a module")
+ 	return cmd
+ }
+diff --git a/store/rootmulti/store.go b/store/rootmulti/store.go
+index bebd6cd1af..4496d9949c 100644
+--- a/store/rootmulti/store.go
++++ b/store/rootmulti/store.go
+@@ -1011,6 +1011,68 @@ func (rs *Store) buildCommitInfo(version int64) *types.CommitInfo {
+ 	}
+ }
+ 
++// DeleteLatestVersion finds a store with the given key name and deletes its latest version.
++// The store is deregistered from the rootmulti store. Calls to buildCommitInfo will not include it.
++// For stores with IAVL types, the deletion is written to the disk.
++// This is a destructive operation to be used with caution.
++// The reason it was added was to allow for rollbacks of upgrades that add modules.
++// Stores that do not exist in the version prior to upgrade can be forcibly deleted
++// before calling Rollback()
++func (rs *Store) DeleteLatestVersion(keyName string) error {
++	ver := GetLatestVersion(rs.db)
++	if ver == 0 {
++		return fmt.Errorf("unable to delete KVStore with key name %s, latest version is 0", keyName)
++	}
++
++	// Find the store key with the provided name
++	var key types.StoreKey = nil
++	for k := range rs.storesParams {
++		if k.Name() == keyName {
++			key = k
++			break
++		}
++	}
++	if key == nil {
++		return fmt.Errorf("no store found with key name %s", keyName)
++	}
++
++	// Get the KVStore for that key
++	cInfo, err := rs.GetCommitInfo(ver)
++	if err != nil {
++		return err
++	}
++	infos := make(map[string]types.StoreInfo)
++	for _, storeInfo := range cInfo.StoreInfos {
++		infos[storeInfo.Name] = storeInfo
++	}
++	commitID := rs.getCommitID(infos, key.Name())
++	store, err := rs.loadCommitStoreFromParams(key, commitID, rs.storesParams[key])
++	if err != nil {
++		return errors.Wrap(err, "failed to load store")
++	}
++
++	rs.logger.Debug("deleting KVStore", "key", key.Name(), "latest version", ver)
++
++	// for IAVL stores, commit the deletion of the latest version to disk.
++	if store.GetStoreType() == types.StoreTypeIAVL {
++		// unwrap the caching layer
++		store = rs.GetCommitKVStore(key)
++		if err := store.(*iavl.Store).DeleteVersions(ver); err != nil {
++			return errors.Wrapf(err, "failed to delete version %d of %s store", ver, key.Name())
++		}
++	}
++
++	// deregister store from the rootmulti store
++	// Any future buildCommitInfo will no longer include the store.
++	if _, ok := rs.stores[key]; ok {
++		delete(rs.stores, key)
++		delete(rs.storesParams, key)
++		delete(rs.keysByName, key.Name())
++	}
++
++	return nil
++}
++
+ // RollbackToVersion delete the versions after `target` and update the latest version.
+ func (rs *Store) RollbackToVersion(target int64) error {
+ 	if target <= 0 {
+-- 
+2.39.3 (Apple Git-146)
+
