@@ -1,7 +1,8 @@
-From 6d8368fb58e8856d29debc52e40c9db01ca50a74 Mon Sep 17 00:00:00 2001
+From 0fcbbd68ea91b12437be1f31ac90ab09cea9b383 Mon Sep 17 00:00:00 2001
 From: Draco <draco@dracoli.com>
 Date: Fri, 19 Jan 2024 11:21:02 -0500
-Subject: [PATCH] Update server config min gas prices to support ; separator
+Subject: [PATCH 2/3] Update server config min gas prices to support ;
+ separator
 
 ---
  server/config/config.go      |  6 +++++-

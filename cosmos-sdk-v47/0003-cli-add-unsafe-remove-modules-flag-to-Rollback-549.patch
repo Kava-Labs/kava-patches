@@ -1,7 +1,7 @@
-From 9683c3135a8c6caadf29b6af6bbd3b7831a275ec Mon Sep 17 00:00:00 2001
+From 46d7d8730a5fb44ed36bbfd718f4e79025259067 Mon Sep 17 00:00:00 2001
 From: Robert Pirtle <Astropirtle@gmail.com>
 Date: Tue, 25 Jun 2024 15:20:13 -0700
-Subject: [PATCH] cli: add --unsafe-remove-modules flag to Rollback (#549)
+Subject: [PATCH 3/3] cli: add --unsafe-remove-modules flag to Rollback (#549)
 
 * rollback command accepts list of store keys names to forcibly delete
 
